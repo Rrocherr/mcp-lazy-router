@@ -416,6 +416,21 @@ class EndToEndRouterTests(unittest.TestCase):
         self.assertNotIn("mcp-lazy-router", imp_data["servers"])
         self.assertIn("demo-stdio", imp_data["servers"])
 
+        setup_router_out = self.tmp_dir / "setup_router.json"
+        setup_proc = _run_cli([
+            "setup",
+            "--client",
+            "claude",
+            "--client-config",
+            str(src_client_cfg),
+            "--router-config",
+            str(setup_router_out),
+        ])
+        self.assertEqual(setup_proc.returncode, 0, msg=setup_proc.stderr)
+        setup_summary = json.loads(setup_proc.stdout)
+        self.assertEqual(setup_summary["total_routed_servers"], 1)
+        self.assertIn("demo-stdio", setup_summary["routed_servers"])
+
 
 if __name__ == "__main__":
     unittest.main()

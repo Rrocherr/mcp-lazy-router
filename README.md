@@ -31,33 +31,24 @@ flowchart LR
 
 ---
 
-## Quick Setup (Antigravity / Claude Desktop / Cursor)
+## 1-Minute Quick Start (2 Commands)
 
-1. Import your existing MCP config (automatically strips any self-referential `mcp-lazy-router` entry):
+No manual JSON editing required. `setup` automatically detects **Antigravity**, **Claude Desktop**, or **Cursor**, creates a `.bak` backup of your existing config, moves your current `mcpServers` into `router_config.json`, and wires `mcp-lazy-router` with absolute paths:
 
 ```bash
-python scripts/run_router.py import-config path/to/claude_desktop_config.json --out router_config.json
+pip install git+https://github.com/RockeTTeee/mcp-lazy-router.git
+mcp-lazy-router setup
 ```
 
-2. Point your MCP client (`mcp_config.json` / `claude_desktop_config.json`) at the router:
+*(Target a specific client with `mcp-lazy-router setup --client claude`, `--client cursor`, or `--client antigravity`, or preview first with `--dry-run`.)*
 
-```json
-{
-  "mcpServers": {
-    "mcp-lazy-router": {
-      "command": "python",
-      "args": [
-        "scripts/run_router.py",
-        "serve",
-        "--config",
-        "router_config.json"
-      ]
-    }
-  }
-}
+### Alternative: Zero-Install (`git clone`)
+
+```bash
+git clone https://github.com/RockeTTeee/mcp-lazy-router.git
+cd mcp-lazy-router
+python scripts/run_router.py setup
 ```
-
-Or drop this repository directly into your plugins folder (`plugin.json` + `skills/mcp-lazy-router/SKILL.md` included).
 
 ---
 
@@ -65,6 +56,7 @@ Or drop this repository directly into your plugins folder (`plugin.json` + `skil
 
 | Command | Purpose |
 | :--- | :--- |
+| `setup [--client auto\|antigravity\|claude\|cursor] [--dry-run]` | One-command auto-migration & client setup |
 | `serve --config <path> [--eager-index]` | Run the MCP stdio server |
 | `index --config <path> [--server <name>]` | Refresh and persist downstream tool indexes |
 | `audit --config <path> [--format table\|markdown\|json] [--refresh]` | Run TDQS quality audit across indexed tools |

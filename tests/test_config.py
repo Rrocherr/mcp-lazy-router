@@ -17,6 +17,7 @@ from mcp_lazy_router.config import (
     expand_env_vars,
     import_client_config,
     load_config,
+    setup_client_integration,
 )
 
 
@@ -112,6 +113,70 @@ class ConfigTests(unittest.TestCase):
             self.assertIn("sqlite", servers)
             self.assertFalse(servers["sqlite"]["enabled"])
             self.assertEqual(servers["remote"]["transport"], "http")
+
+    def test_setup_client_integration_idempotent_backup_and_empty_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_dir = Path(tmp)
+            client_cfg = tmp_dir / "claude_desktop_config.json"
+            router_cfg = tmp_dir / "router_config.json"
+            client_cfg.write_text(
+                json.dumps({
+                    "preferences": {"theme": "dark"},
+                    "mcpServers": {
+                        "github": {"command": "npx", "args": ["-y", "gh-mcp"]},
+                        "docs": {"url": "https://docs.example.com/mcp"},
+                    },
+                }),
+                encoding="utf-8",
+            )
+
+            # Dry run leaves files unchanged
+            dry = setup_client_integration(
+                client="claude",
+                client_config_path=client_cfg,
+                router_config_path=router_cfg,
+                dry_run=True,
+            )
+            self.assertTrue(dry["dry_run"])
+            self.assertFalse(router_cfg.exists())
+
+            # First real run creates .bak, migrates servers, preserves preferences
+            res1 = setup_client_integration(
+                client="claude",
+                client_config_path=client_cfg,
+                router_config_path=router_cfg,
+                dry_run=False,
+            )
+            self.assertEqual(res1["total_routed_servers"], 2)
+            self.assertTrue((tmp_dir / "claude_desktop_config.json.bak").is_file())
+            updated_client = json.loads(client_cfg.read_text(encoding="utf-8"))
+            self.assertEqual(updated_client["preferences"], {"theme": "dark"})
+            self.assertEqual(list(updated_client["mcpServers"].keys()), ["mcp-lazy-router"])
+
+            # Second run (idempotency): client_cfg now only has mcp-lazy-router,
+            # but router_cfg MUST preserve github and docs
+            res2 = setup_client_integration(
+                client="claude",
+                client_config_path=client_cfg,
+                router_config_path=router_cfg,
+                dry_run=False,
+            )
+            self.assertEqual(res2["total_routed_servers"], 2)
+            saved_router = json.loads(router_cfg.read_text(encoding="utf-8"))
+            self.assertIn("github", saved_router["servers"])
+            self.assertIn("docs", saved_router["servers"])
+
+            # 0-byte empty client config is handled cleanly
+            empty_cfg = tmp_dir / "empty_mcp.json"
+            empty_cfg.write_text("", encoding="utf-8")
+            empty_router = tmp_dir / "empty_router.json"
+            res3 = setup_client_integration(
+                client="antigravity",
+                client_config_path=empty_cfg,
+                router_config_path=empty_router,
+            )
+            self.assertEqual(res3["total_routed_servers"], 0)
+            self.assertTrue(empty_router.is_file())
 
 
 if __name__ == "__main__":

@@ -6,6 +6,8 @@ import hashlib
 import json
 import os
 import re
+import shutil
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
@@ -398,4 +400,205 @@ def import_client_config(source_path: str | Path) -> dict[str, Any]:
             "spill_oversized_responses": True,
         },
         "servers": imported_servers,
+    }
+
+
+def _candidate_client_paths() -> dict[str, Path]:
+    home = Path.home()
+    if sys.platform == "win32":
+        appdata = Path(os.environ.get("APPDATA", home / "AppData" / "Roaming"))
+        claude_path = appdata / "Claude" / "claude_desktop_config.json"
+    elif sys.platform == "darwin":
+        claude_path = (
+            home / "Library" / "Application Support" / "Claude" / "claude_desktop_config.json"
+        )
+    else:
+        xdg = Path(os.environ.get("XDG_CONFIG_HOME", home / ".config"))
+        claude_path = xdg / "Claude" / "claude_desktop_config.json"
+
+    return {
+        "antigravity": home / ".gemini" / "config" / "mcp_config.json",
+        "claude": claude_path,
+        "cursor": home / ".cursor" / "mcp.json",
+    }
+
+
+def detect_client_config_path(
+    client: str = "auto",
+    custom_path: str | Path | None = None,
+) -> tuple[str, Path]:
+    """Resolve the target client name and MCP configuration file path."""
+    if custom_path is not None:
+        resolved_client = client if client != "auto" else "custom"
+        return resolved_client, Path(custom_path).resolve()
+
+    candidates = _candidate_client_paths()
+    if client != "auto":
+        if client not in candidates:
+            raise ConfigError(
+                f"Unknown client '{client}'; choose from auto, antigravity, claude, cursor"
+            )
+        return client, candidates[client].resolve()
+
+    for name in ("antigravity", "claude", "cursor"):
+        p = candidates[name]
+        if p.is_file():
+            return name, p.resolve()
+    for name in ("antigravity", "claude", "cursor"):
+        p = candidates[name]
+        if p.parent.is_dir():
+            return name, p.resolve()
+    return "antigravity", candidates["antigravity"].resolve()
+
+
+def _extract_non_self_servers(raw_servers: Any) -> dict[str, Any]:
+    if not isinstance(raw_servers, dict):
+        return {}
+    imported_servers: dict[str, Any] = {}
+    for name, entry in raw_servers.items():
+        if not isinstance(entry, dict) or _is_self_referential_server(name, entry):
+            continue
+        item: dict[str, Any] = {}
+        url = entry.get("url") or entry.get("serverUrl")
+        if url:
+            item["transport"] = "http"
+            item["url"] = url
+            if isinstance(entry.get("headers"), dict):
+                item["headers"] = dict(entry["headers"])
+        elif entry.get("command"):
+            item["transport"] = "stdio"
+            item["command"] = entry["command"]
+            if isinstance(entry.get("args"), list):
+                item["args"] = list(entry["args"])
+            if isinstance(entry.get("env"), dict):
+                item["env"] = dict(entry["env"])
+            if isinstance(entry.get("cwd"), str):
+                item["cwd"] = entry["cwd"]
+        else:
+            continue
+
+        if "disabled" in entry:
+            item["enabled"] = not bool(entry["disabled"])
+        elif "enabled" in entry:
+            item["enabled"] = bool(entry["enabled"])
+        else:
+            item["enabled"] = True
+
+        imported_servers[name] = item
+    return imported_servers
+
+
+def setup_client_integration(
+    client: str = "auto",
+    client_config_path: str | Path | None = None,
+    router_config_path: str | Path | None = None,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """One-command idempotent setup migrating existing MCP servers into router_config.json."""
+    resolved_client, target_client_cfg = detect_client_config_path(client, client_config_path)
+    if router_config_path is not None:
+        target_router_cfg = Path(router_config_path).resolve()
+    else:
+        target_router_cfg = (target_client_cfg.parent / "router_config.json").resolve()
+
+    client_data: dict[str, Any] = {}
+    has_existing_client_file = target_client_cfg.is_file() and target_client_cfg.stat().st_size > 0
+    if has_existing_client_file:
+        try:
+            parsed = json.loads(target_client_cfg.read_text(encoding="utf-8-sig"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ConfigError(
+                f"Failed to parse existing client config {target_client_cfg}: {exc}"
+            ) from exc
+        if not isinstance(parsed, dict):
+            raise ConfigError(f"Client config {target_client_cfg} root must be a JSON object")
+        client_data = dict(parsed)
+
+    migrated_from_client = _extract_non_self_servers(
+        client_data.get("mcpServers") or client_data.get("servers")
+    )
+
+    router_data: dict[str, Any] = {
+        "cache_path": ".mcp_lazy_cache.json",
+        "spill_dir": ".mcp_lazy_spills",
+        "cache_ttl_seconds": 86400,
+        "policy": {
+            "read_only": False,
+            "require_confirmation_for_destructive": True,
+            "strict_destructive_heuristics": True,
+            "allowed_tools": [],
+            "blocked_tools": [],
+            "max_response_chars": 24000,
+            "spill_oversized_responses": True,
+        },
+        "servers": {},
+    }
+    if target_router_cfg.is_file() and target_router_cfg.stat().st_size > 0:
+        try:
+            existing_router = json.loads(target_router_cfg.read_text(encoding="utf-8-sig"))
+            if isinstance(existing_router, dict):
+                for k, v in existing_router.items():
+                    if k != "servers":
+                        router_data[k] = v
+                existing_servers = _extract_non_self_servers(existing_router.get("servers"))
+                router_data["servers"].update(existing_servers)
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ConfigError(
+                f"Failed to parse existing router config {target_router_cfg}: {exc}"
+            ) from exc
+
+    router_data["servers"].update(migrated_from_client)
+
+    repo_launcher = Path(__file__).resolve().parent.parent.parent / "scripts" / "run_router.py"
+    if repo_launcher.is_file():
+        mcp_entry = {
+            "command": sys.executable,
+            "args": [
+                str(repo_launcher.resolve()),
+                "serve",
+                "--config",
+                str(target_router_cfg),
+            ],
+        }
+    else:
+        mcp_entry = {
+            "command": sys.executable,
+            "args": [
+                "-m",
+                "mcp_lazy_router",
+                "serve",
+                "--config",
+                str(target_router_cfg),
+            ],
+        }
+
+    backup_path: Path | None = None
+    if not dry_run:
+        target_router_cfg.parent.mkdir(parents=True, exist_ok=True)
+        target_client_cfg.parent.mkdir(parents=True, exist_ok=True)
+        if has_existing_client_file:
+            backup_path = target_client_cfg.with_name(target_client_cfg.name + ".bak")
+            shutil.copy2(target_client_cfg, backup_path)
+
+        target_router_cfg.write_text(
+            json.dumps(router_data, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        updated_client = {k: v for k, v in client_data.items() if k != "servers"}
+        updated_client["mcpServers"] = {"mcp-lazy-router": mcp_entry}
+        target_client_cfg.write_text(
+            json.dumps(updated_client, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+    routed_list = list(router_data["servers"].keys())
+    return {
+        "client": resolved_client,
+        "client_config_path": str(target_client_cfg),
+        "backup_path": str(backup_path) if backup_path else None,
+        "router_config_path": str(target_router_cfg),
+        "total_routed_servers": len(routed_list),
+        "routed_servers": routed_list,
+        "dry_run": dry_run,
+        "mcp_entry": mcp_entry,
     }

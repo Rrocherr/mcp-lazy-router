@@ -8,7 +8,12 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from .config import ConfigError, import_client_config, load_config
+from .config import (
+    ConfigError,
+    import_client_config,
+    load_config,
+    setup_client_integration,
+)
 from .router import LazyRouter
 from .server import MCPLazyRouterServer, get_meta_tools
 
@@ -184,6 +189,17 @@ def _cmd_import_config(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_setup(args: argparse.Namespace) -> int:
+    summary = setup_client_integration(
+        client=args.client,
+        client_config_path=args.client_config,
+        router_config_path=args.router_config,
+        dry_run=args.dry_run,
+    )
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
+    return 0
+
+
 def _cmd_benchmark(args: argparse.Namespace) -> int:
     cfg = load_config(args.config)
     router = LazyRouter(cfg)
@@ -273,6 +289,33 @@ def build_parser() -> argparse.ArgumentParser:
     p_import.add_argument("source", help="Path to existing MCP client config JSON.")
     p_import.add_argument("--out", default=None, help="Optional output file path.")
     p_import.set_defaults(func=_cmd_import_config)
+
+    p_setup = sub.add_parser(
+        "setup",
+        help="One-command auto-setup for Antigravity, Claude Desktop, or Cursor.",
+    )
+    p_setup.add_argument(
+        "--client",
+        default="auto",
+        choices=["auto", "antigravity", "claude", "cursor"],
+        help="Target MCP client (default: auto).",
+    )
+    p_setup.add_argument(
+        "--client-config",
+        default=None,
+        help="Optional explicit path to client MCP JSON config.",
+    )
+    p_setup.add_argument(
+        "--router-config",
+        default=None,
+        help="Optional output path for router_config.json.",
+    )
+    p_setup.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Preview changes without modifying files.",
+    )
+    p_setup.set_defaults(func=_cmd_setup)
 
     p_bench = sub.add_parser("benchmark", help="Measure upfront context token savings.")
     p_bench.add_argument("--config", required=True, help="Path to router config JSON.")
