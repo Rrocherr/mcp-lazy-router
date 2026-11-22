@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "mcp-lazy-router": {
+      "command": "python",
+      "args": [
+        "scripts/run_router.py",
+        "serve",
+        "--config",
+        "router_config.json"
+      ]
+    }
+  }
+}

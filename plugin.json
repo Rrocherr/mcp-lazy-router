@@ -1,0 +1,9 @@
+{
+  "name": "mcp-lazy-router",
+  "description": "Dynamic lazy-loading MCP router and TDQS tool-description optimizer that eliminates context bloat across multiple downstream MCP servers.",
+  "suggestedPrompts": [
+    "Search available downstream tools using search_tools before loading full schemas",
+    "Run router_status with include_tdqs_audit=true to inspect tool description quality",
+    "Audit my existing MCP configuration and measure context token savings"
+  ]
+}
